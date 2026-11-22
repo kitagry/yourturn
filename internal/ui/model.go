@@ -80,6 +80,13 @@ type Model struct {
 	// quitArmed is set by a q that was held back by a pending reply.
 	quitArmed bool
 
+	// loadSeq numbers the reads started, appliedSeq is the newest applied.
+	loadSeq, appliedSeq int
+	// held is a read that came while a reply was typed or a link was being
+	// picked; it is applied when that ends, so the list does not change
+	// under the user.
+	held *loadedMsg
+
 	// cache holds lines() for cacheKey; gen counts changes to what is drawn
 	// other than the fields in the key.
 	gen      int
@@ -169,6 +176,8 @@ type loadedMsg struct {
 	modTime time.Time
 	missing bool
 	err     error
+	// seq orders reads: they run concurrently and may finish out of order.
+	seq int
 }
 
 type changedMsg struct{}
@@ -185,19 +194,21 @@ func (m *Model) Init() tea.Cmd {
 
 func (m *Model) load() tea.Cmd {
 	path := m.path
+	m.loadSeq++
+	seq := m.loadSeq
 	return func() tea.Msg {
 		b, err := os.ReadFile(path)
 		if errors.Is(err, fs.ErrNotExist) {
-			return loadedMsg{missing: true}
+			return loadedMsg{missing: true, seq: seq}
 		}
 		if err != nil {
-			return loadedMsg{err: err}
+			return loadedMsg{err: err, seq: seq}
 		}
 		var mod time.Time
 		if fi, err := os.Stat(path); err == nil {
 			mod = fi.ModTime()
 		}
-		return loadedMsg{doc: actions.Parse(string(b)), modTime: mod}
+		return loadedMsg{doc: actions.Parse(string(b)), modTime: mod, seq: seq}
 	}
 }
 
@@ -243,12 +254,30 @@ func (m *Model) openCount() int {
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := m.update(msg)
+	if m.held != nil && !m.inputting && m.picking == nil {
+		held := *m.held
+		m.held = nil
+		m.applyLoad(held)
+	}
+	return model, cmd
+}
+
+func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.resizeInput()
 		m.clampOffset()
 	case loadedMsg:
+		// A failed read only sets loadErr, which does not move the list, and
+		// holding it could replace a good held read.
+		if msg.err == nil && (m.inputting || m.picking != nil) {
+			if m.held == nil || msg.seq >= m.held.seq {
+				m.held = &msg
+			}
+			return m, nil
+		}
 		m.applyLoad(msg)
 	case changedMsg:
 		return m, tea.Batch(m.load(), m.waitChange())
@@ -286,18 +315,28 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) applyLoad(msg loadedMsg) {
+	if msg.seq < m.appliedSeq {
+		return
+	}
 	if msg.err != nil {
 		// Keep showing what was read last.
 		m.loadErr = msg.err
+		return
+	}
+	m.appliedSeq = msg.seq
+	// A writer that truncates and then writes can be read in between. No
+	// ACTIONS.md is empty, so keep what is shown; the write's own event
+	// brings the rest.
+	if !msg.missing && strings.TrimSpace(msg.doc.Raw) == "" && m.doc.Parsed {
 		return
 	}
 	prevKey := ""
 	if it, ok := m.current(); ok {
 		prevKey = it.Key()
 	}
+	anchorKey, anchorDelta := m.anchor()
 	m.gen++
 	m.loadErr, m.missing = nil, msg.missing
-	m.picking = nil
 	if msg.missing {
 		m.doc = actions.Doc{}
 		return
@@ -308,7 +347,48 @@ func (m *Model) applyLoad(msg loadedMsg) {
 		m.cursor = i
 	}
 	m.cursor = min(m.cursor, max(len(items)-1, 0))
-	m.ensureVisible()
+	m.restoreAnchor(anchorKey, anchorDelta)
+}
+
+// anchor is where the screen is, as the item whose line is at its top and how
+// many lines into that item (-1 for its group heading), so a reload that adds
+// or removes lines elsewhere does not move what the user is reading.
+func (m *Model) anchor() (string, int) {
+	lines := m.lines()
+	if m.offset >= len(lines) || lines[m.offset].key == "" {
+		return "", 0
+	}
+	key := lines[m.offset].key
+	return key, m.offset - m.itemStart(key)
+}
+
+func (m *Model) restoreAnchor(key string, delta int) {
+	found := false
+	if key != "" {
+		if start := m.itemStart(key); start >= 0 {
+			m.offset = start + delta
+			found = true
+		}
+	}
+	// ensureVisible does not clamp when there is no item, and the list may
+	// have shrunk below the screen.
+	m.clampOffset()
+	// The anchor may be gone, or the cursor moved off screen because its
+	// item went: then show the cursor.
+	start, end := m.itemRange(m.cursor)
+	if !found || end <= m.offset || start >= m.offset+m.bodyHeight() {
+		m.ensureVisible()
+	}
+}
+
+// itemStart is the first line of the item with key, -1 if it is not shown.
+func (m *Model) itemStart(key string) int {
+	for n, l := range m.lines() {
+		if l.key == key && !l.heading {
+			return n
+		}
+	}
+	return -1
 }
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
@@ -749,8 +829,11 @@ func (m *Model) ensureVisible() {
 // line is one rendered body line; item is the visible item it belongs to,
 // -1 for headings and text.
 type line struct {
-	text    string
-	item    int
+	text string
+	item int
+	// key is the key of the item the line belongs to; for a group heading,
+	// of the group's first item. "" for other text.
+	key     string
 	heading bool
 }
 
@@ -802,9 +885,13 @@ func (m *Model) renderLines() []line {
 			group = it.Mark
 			n := counts[group]
 			label := fmt.Sprintf("── %s %d ", group.Label(), n)
-			out = append(out, line{text: headStyle.Render(label + strings.Repeat("─", max(w-lipgloss.Width(label), 0))), item: -1, heading: true})
+			out = append(out, line{text: headStyle.Render(label + strings.Repeat("─", max(w-lipgloss.Width(label), 0))), item: -1, key: it.Key(), heading: true})
 		}
-		out = append(out, m.itemLines(i, it, w)...)
+		ls := m.itemLines(i, it, w)
+		for j := range ls {
+			ls[j].key = it.Key()
+		}
+		out = append(out, ls...)
 	}
 	if len(items) == 0 {
 		text("(nothing to do)", faint)
