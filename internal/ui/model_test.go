@@ -392,3 +392,35 @@ func itoa(i int) string { return strconv.Itoa(i) }
 func isLinkKey(k string) bool {
 	return k == "o" || (len(k) == 1 && k[0] >= '1' && k[0] <= '9')
 }
+
+func TestMouseToggle(t *testing.T) {
+	hs := newTest(t, sample, 80, 20)
+	if hs.m.View().MouseMode != tea.MouseModeNone {
+		t.Error("mouse captured by default")
+	}
+	if !strings.Contains(screen(hs)[19], "m mouse off") {
+		t.Errorf("footer does not show the mouse state: %q", screen(hs)[19])
+	}
+	send(hs, key("m"))
+	if hs.m.View().MouseMode != tea.MouseModeCellMotion {
+		t.Error("m did not capture the mouse")
+	}
+	if !strings.Contains(hs.m.status, "mouse on") {
+		t.Errorf("status = %q", hs.m.status)
+	}
+	send(hs, key("j"))
+	if !strings.Contains(screen(hs)[19], "m mouse on") {
+		t.Errorf("footer does not show the mouse state: %q", screen(hs)[19])
+	}
+	send(hs, key("m"))
+	if hs.m.View().MouseMode != tea.MouseModeNone {
+		t.Error("m did not release the mouse")
+	}
+}
+
+func TestMouseOption(t *testing.T) {
+	m := New(Options{Path: "x", Mouse: true})
+	if m.View().MouseMode != tea.MouseModeCellMotion {
+		t.Error("Mouse option ignored")
+	}
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"testing"
@@ -49,5 +50,36 @@ func TestSentFile(t *testing.T) {
 	}
 	if got := sentFile("/home/u", func(k string) string { return map[string]string{"XDG_STATE_HOME": "/s"}[k] }); got != "/s/yourturn/sent.json" {
 		t.Errorf("XDG_STATE_HOME: got %q", got)
+	}
+}
+
+func TestMouseFlags(t *testing.T) {
+	tests := map[string]struct {
+		env  string
+		args []string
+		want bool
+	}{
+		"unset is off":            {want: false},
+		"env on":                  {env: "1", want: true},
+		"env true":                {env: "true", want: true},
+		"env off":                 {env: "0", want: false},
+		"unknown env is off":      {env: "maybe", want: false},
+		"no-mouse beats env":      {env: "1", args: []string{"--no-mouse"}, want: false},
+		"mouse=false beats env":   {env: "1", args: []string{"--mouse=false"}, want: false},
+		"mouse beats env":         {env: "0", args: []string{"--mouse"}, want: true},
+		"no-mouse beats mouse":    {args: []string{"--mouse", "--no-mouse"}, want: false},
+		"no-mouse=false is no-op": {env: "1", args: []string{"--no-mouse=false"}, want: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			fs := flag.NewFlagSet("yourturn", flag.ContinueOnError)
+			mouse := mouseFlags(fs, tt.env)
+			if err := fs.Parse(tt.args); err != nil {
+				t.Fatal(err)
+			}
+			if got := mouse(); got != tt.want {
+				t.Errorf("mouse() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

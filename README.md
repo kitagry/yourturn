@@ -14,7 +14,7 @@ demo actions                          open 3 · 14:56
 ── 🟢 when you have time 2 ──────────────────────────
 ▸ 2 A or B?
 ▸ 3 Log in to the console and check the bill. It ha…
-j/k move · enter open · o link · y copy id · a done
+m mouse off · j/k move · enter open · o link · y cop…
 ```
 
 ## Install
@@ -40,7 +40,7 @@ Without a file, it uses the first that exists of `./ACTIONS.md`,
 
 | Flag | |
 |---|---|
-| `--no-mouse` | Leave the mouse to the terminal, so a plain click opens a link (no wheel scrolling) |
+| `--mouse` / `--no-mouse` | Capture the mouse at start, or not (default `$YOURTURN_MOUSE`, else not; `m` toggles) |
 | `--poll 5s` | Interval of the stat check that backs up file watching |
 | `--reply-cmd CMD` | Command that sends a reply (`R`); default `$YOURTURN_REPLY_CMD`. See [Replying](#replying) |
 | `--reply-delay 5s` | How long a reply can be undone (`u`) before it is sent |
@@ -62,11 +62,16 @@ Without a file, it uses the first that exists of `./ACTIONS.md`,
 | `R` | Reply to the item (needs `--reply-cmd`) |
 | `u` | Undo the reply that is about to be sent |
 | `r` | Reload |
+| `m` | Capture the mouse / give it back to the terminal |
 | `?` | Help |
 | `q` | Quit |
-| mouse | Wheel scrolls, click selects, click again opens |
+| mouse | When captured: wheel scrolls, click selects, click again opens |
 
-With the mouse enabled, most terminals still open a link on shift+click.
+The mouse is left to the terminal by default, so you can select and copy text
+and click links as anywhere else. Press `m` to capture it for wheel scrolling
+and clicking items, and `m` again to give it back; the footer shows which.
+Set `YOURTURN_MOUSE=1` to start with it captured. While captured, many
+terminals still select text on shift+drag.
 
 ## Replying
 

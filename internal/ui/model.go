@@ -27,9 +27,10 @@ type Options struct {
 	Path string
 	// Open opens a URL in the browser.
 	Open func(url string) error
-	// NoMouse leaves the mouse to the terminal, so clicking an OSC 8 link
-	// opens it.
-	NoMouse bool
+	// Mouse captures the mouse at start: the wheel scrolls and a click
+	// selects. Without it the terminal keeps the mouse, so text can be
+	// selected and copied and OSC 8 links clicked. m toggles it.
+	Mouse bool
 	// Poll is the interval of the stat that backs up fsnotify.
 	Poll time.Duration
 	// Reply sends a reply to an item; nil turns replies off.
@@ -46,7 +47,7 @@ type Options struct {
 type Model struct {
 	path    string
 	open    func(string) error
-	noMouse bool
+	mouse   bool
 	poll    time.Duration
 	changes <-chan struct{}
 
@@ -115,7 +116,7 @@ func New(opts Options) *Model {
 	m := &Model{
 		path:       path,
 		open:       opts.Open,
-		noMouse:    opts.NoMouse,
+		mouse:      opts.Mouse,
 		poll:       poll,
 		expanded:   map[string]bool{},
 		replyFn:    opts.Reply,
@@ -421,6 +422,13 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 		return tea.Quit
+	case "m":
+		m.mouse = !m.mouse
+		if m.mouse {
+			m.status = "mouse on: wheel scrolls, click selects (m to give it back to the terminal)"
+		} else {
+			m.status = "mouse off: the terminal selects text and opens links (m to capture)"
+		}
 	case "R":
 		return m.startReply()
 	case "u":
@@ -1018,7 +1026,7 @@ func bodyLines(src string, w, item int) []line {
 func (m *Model) View() tea.View {
 	var v tea.View
 	v.AltScreen = true
-	if !m.noMouse {
+	if m.mouse {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	if m.width == 0 || m.height == 0 {
@@ -1094,9 +1102,14 @@ func (m *Model) footer() string {
 	case m.status != "":
 		return statusStyle.Render(fit(m.status, m.width))
 	}
-	hint := "j/k move · enter open · o link · y copy id · a done · ? help"
+	mouse := "m mouse off"
+	if m.mouse {
+		mouse = "m mouse on"
+	}
+	// The mouse state comes first: a narrow pane cuts the end of the line.
+	hint := mouse + " · j/k move · enter open · o link · y copy id · ? help"
 	if m.replyFn != nil {
-		hint = "j/k move · enter open · R reply · u undo · o link · ? help"
+		hint = mouse + " · j/k move · enter open · R reply · u undo · ? help"
 	}
 	return faint.Render(fit(hint, m.width))
 }
@@ -1116,7 +1129,9 @@ func helpLines(h int) []string {
 		"R           reply to the item (with --reply-cmd)",
 		"u           undo the reply being sent",
 		"r           reload",
-		"mouse       wheel scrolls, click selects, click again opens",
+		"m           capture the mouse / give it back to the terminal",
+		"mouse       (captured) wheel scrolls, click selects, click again opens",
+		"            (released) select and copy text, click links",
 		"q           quit",
 		"",
 		"press any key to go back",

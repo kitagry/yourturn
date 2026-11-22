@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -21,7 +22,7 @@ import (
 var version = "dev"
 
 func main() {
-	noMouse := flag.Bool("no-mouse", false, "leave the mouse to the terminal (click links directly; no wheel scrolling)")
+	mouse := mouseFlags(flag.CommandLine, os.Getenv("YOURTURN_MOUSE"))
 	poll := flag.Duration("poll", 5*time.Second, "interval of the stat check that backs up file watching")
 	replyCmd := flag.String("reply-cmd", os.Getenv("YOURTURN_REPLY_CMD"), "shell command that sends a reply (R); gets YOURTURN_ID, YOURTURN_TEXT, YOURTURN_MESSAGE, YOURTURN_FILE and the message on stdin (default $YOURTURN_REPLY_CMD)")
 	replyDelay := flag.Duration("reply-delay", 5*time.Second, "how long a reply can be undone (u) before it is sent")
@@ -49,7 +50,7 @@ Flags:
 	cwd, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
 	path := resolvePath(flag.Args(), cwd, home, os.Getenv)
-	opts := ui.Options{Path: path, Open: openURL, NoMouse: *noMouse, Poll: *poll, ReplyDelay: *replyDelay, SentFile: sentFile(home, os.Getenv)}
+	opts := ui.Options{Path: path, Open: openURL, Mouse: mouse(), Poll: *poll, ReplyDelay: *replyDelay, SentFile: sentFile(home, os.Getenv)}
 	if *replyCmd != "" {
 		opts.Reply = reply.Command{Shell: *replyCmd}.Send
 	}
@@ -77,6 +78,22 @@ func resolvePath(args []string, cwd, home string, getenv func(string) string) st
 		}
 	}
 	return candidates[0]
+}
+
+// mouseFlags defines --mouse and --no-mouse on fs and returns whether the
+// mouse is captured at start. YOURTURN_MOUSE is the default of --mouse rather
+// than a fallback after parsing, so an explicit --mouse=false still beats it.
+// The mouse is off by default so the terminal's text selection and link
+// clicks work.
+func mouseFlags(fs *flag.FlagSet, env string) func() bool {
+	var on bool
+	switch strings.ToLower(strings.TrimSpace(env)) {
+	case "1", "true", "on", "yes":
+		on = true
+	}
+	mouse := fs.Bool("mouse", on, "capture the mouse at start: wheel scrolls, click selects (default $YOURTURN_MOUSE, else off; m toggles)")
+	noMouse := fs.Bool("no-mouse", false, "leave the mouse to the terminal at start, to select text and click links (beats --mouse)")
+	return func() bool { return *mouse && !*noMouse }
 }
 
 // sentFile is where the marks of sent replies are kept.
