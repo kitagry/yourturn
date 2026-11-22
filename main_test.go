@@ -59,11 +59,12 @@ func TestMouseFlags(t *testing.T) {
 		args []string
 		want bool
 	}{
-		"unset is off":            {want: false},
+		"unset is on":             {want: true},
 		"env on":                  {env: "1", want: true},
-		"env true":                {env: "true", want: true},
 		"env off":                 {env: "0", want: false},
-		"unknown env is off":      {env: "maybe", want: false},
+		"env false":               {env: "false", want: false},
+		"env off word":            {env: "off", want: false},
+		"unknown env is on":       {env: "maybe", want: true},
 		"no-mouse beats env":      {env: "1", args: []string{"--no-mouse"}, want: false},
 		"mouse=false beats env":   {env: "1", args: []string{"--mouse=false"}, want: false},
 		"mouse beats env":         {env: "0", args: []string{"--mouse"}, want: true},

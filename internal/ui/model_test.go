@@ -395,8 +395,9 @@ func isLinkKey(k string) bool {
 
 func TestMouseToggle(t *testing.T) {
 	hs := newTest(t, sample, 80, 20)
+	// The ui leaves the default to its caller: Options.Mouse is false here.
 	if hs.m.View().MouseMode != tea.MouseModeNone {
-		t.Error("mouse captured by default")
+		t.Error("mouse captured without Options.Mouse")
 	}
 	if !strings.Contains(screen(hs)[19], "m mouse off") {
 		t.Errorf("footer does not show the mouse state: %q", screen(hs)[19])

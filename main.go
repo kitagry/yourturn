@@ -83,15 +83,15 @@ func resolvePath(args []string, cwd, home string, getenv func(string) string) st
 // mouseFlags defines --mouse and --no-mouse on fs and returns whether the
 // mouse is captured at start. YOURTURN_MOUSE is the default of --mouse rather
 // than a fallback after parsing, so an explicit --mouse=false still beats it.
-// The mouse is off by default so the terminal's text selection and link
-// clicks work.
+// The mouse is captured by default for wheel scrolling and clicking items; m
+// gives it back to the terminal for copying text.
 func mouseFlags(fs *flag.FlagSet, env string) func() bool {
-	var on bool
+	on := true
 	switch strings.ToLower(strings.TrimSpace(env)) {
-	case "1", "true", "on", "yes":
-		on = true
+	case "0", "false", "off", "no":
+		on = false
 	}
-	mouse := fs.Bool("mouse", on, "capture the mouse at start: wheel scrolls, click selects (default $YOURTURN_MOUSE, else off; m toggles)")
+	mouse := fs.Bool("mouse", on, "capture the mouse at start: wheel scrolls, click selects, m toggles; YOURTURN_MOUSE=0 (or false, off, no) makes off the default")
 	noMouse := fs.Bool("no-mouse", false, "leave the mouse to the terminal at start, to select text and click links (beats --mouse)")
 	return func() bool { return *mouse && !*noMouse }
 }
