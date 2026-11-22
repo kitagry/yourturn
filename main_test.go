@@ -42,3 +42,12 @@ func TestResolvePath(t *testing.T) {
 		t.Errorf("cwd: got %q, want %q", got, want)
 	}
 }
+
+func TestSentFile(t *testing.T) {
+	if got := sentFile("/home/u", func(string) string { return "" }); got != "/home/u/.local/state/yourturn/sent.json" {
+		t.Errorf("default: got %q", got)
+	}
+	if got := sentFile("/home/u", func(k string) string { return map[string]string{"XDG_STATE_HOME": "/s"}[k] }); got != "/s/yourturn/sent.json" {
+		t.Errorf("XDG_STATE_HOME: got %q", got)
+	}
+}

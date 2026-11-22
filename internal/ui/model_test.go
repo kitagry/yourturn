@@ -72,7 +72,8 @@ func send(hs *harness, msg tea.Msg) *harness {
 	hs.lastCmd = cmd
 	// Link opening runs as a command; run it so tests see the URL.
 	if cmd != nil {
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Only the link keys: other commands (ticks, cursor blink) block.
+		if k, ok := msg.(tea.KeyPressMsg); ok && !hs.m.inputting && isLinkKey(k.String()) {
 			if r, ok := cmd().(openedMsg); ok {
 				hs.m.Update(r)
 			}
@@ -387,3 +388,7 @@ func TestQuit(t *testing.T) {
 }
 
 func itoa(i int) string { return strconv.Itoa(i) }
+
+func isLinkKey(k string) bool {
+	return k == "o" || (len(k) == 1 && k[0] >= '1' && k[0] <= '9')
+}

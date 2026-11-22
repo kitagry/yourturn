@@ -13,11 +13,13 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"github.com/kitagry/yourturn/internal/actions"
 	"github.com/kitagry/yourturn/internal/render"
+	"github.com/kitagry/yourturn/internal/reply"
 	"github.com/kitagry/yourturn/internal/watch"
 )
 
@@ -30,6 +32,15 @@ type Options struct {
 	NoMouse bool
 	// Poll is the interval of the stat that backs up fsnotify.
 	Poll time.Duration
+	// Reply sends a reply to an item; nil turns replies off.
+	Reply func(context.Context, reply.Reply) error
+	// ReplyDelay is how long a reply waits, undoable, before it is sent.
+	ReplyDelay time.Duration
+	// SentFile keeps the sent marks across restarts; "" keeps them in
+	// memory only.
+	SentFile string
+	// Now is the clock; nil means time.Now.
+	Now func() time.Time
 }
 
 type Model struct {
@@ -56,6 +67,19 @@ type Model struct {
 	picking []string
 	status  string
 
+	replyFn    func(context.Context, reply.Reply) error
+	replyDelay time.Duration
+	sentFile   string
+	now        func() time.Time
+	// replies is the reply state of items, by item key.
+	replies   map[string]replyState
+	replySeq  int
+	inputting bool
+	input     textinput.Model
+	inputKey  string
+	// quitArmed is set by a q that was held back by a pending reply.
+	quitArmed bool
+
 	// cache holds lines() for cacheKey; gen counts changes to what is drawn
 	// other than the fields in the key.
 	gen      int
@@ -73,13 +97,71 @@ func New(opts Options) *Model {
 	if poll <= 0 {
 		poll = 5 * time.Second
 	}
-	return &Model{
-		path:     opts.Path,
-		open:     opts.Open,
-		noMouse:  opts.NoMouse,
-		poll:     poll,
-		expanded: map[string]bool{},
+	now := opts.Now
+	if now == nil {
+		now = time.Now
 	}
+	path := opts.Path
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	m := &Model{
+		path:       path,
+		open:       opts.Open,
+		noMouse:    opts.NoMouse,
+		poll:       poll,
+		expanded:   map[string]bool{},
+		replyFn:    opts.Reply,
+		replyDelay: opts.ReplyDelay,
+		sentFile:   opts.SentFile,
+		now:        now,
+		replies:    map[string]replyState{},
+		input:      textinput.New(),
+	}
+	if m.sentFile != "" {
+		for k, e := range readSent(m.sentFile)[m.path] {
+			// Expired marks are only dropped from the file on the next save.
+			if now().Sub(e.At) <= sentTTL {
+				m.replies[k] = replyState{state: stateSent, text: e.Text, at: e.At}
+			}
+		}
+	}
+	return m
+}
+
+type replyStage int
+
+const (
+	statePending replyStage = iota
+	stateSending
+	stateSent
+	stateFailed
+)
+
+// replyState is keyed by item key, which is the item's ID: only items with
+// an ID can be replied to.
+type replyState struct {
+	state replyStage
+	text  string
+	// seq tells a delayed send or a result from those of an older reply to
+	// the same item.
+	seq int
+	at  time.Time
+	err string
+	// prev is the sent or failed reply a pending one replaced, shown again
+	// if it is undone.
+	prev *replyState
+}
+
+type sendDueMsg struct {
+	key string
+	seq int
+}
+
+type replyDoneMsg struct {
+	key string
+	seq int
+	err error
 }
 
 type loadedMsg struct {
@@ -164,6 +246,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.resizeInput()
 		m.clampOffset()
 	case loadedMsg:
 		m.applyLoad(msg)
@@ -177,6 +260,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyPressMsg:
 		return m, m.handleKey(msg)
+	case tea.PasteMsg:
+		if m.inputting {
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+	case sendDueMsg:
+		return m, m.dispatch(msg)
+	case replyDoneMsg:
+		m.finishReply(msg)
 	case tea.MouseWheelMsg:
 		switch msg.Button {
 		case tea.MouseWheelUp:
@@ -220,6 +313,11 @@ func (m *Model) applyLoad(msg loadedMsg) {
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	k := msg.String()
+	if m.inputting {
+		return m.handleInput(msg)
+	}
+	armed := m.quitArmed
+	m.quitArmed = false
 	if m.picking != nil {
 		links := m.picking
 		m.picking = nil
@@ -237,7 +335,16 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	m.status = ""
 	switch k {
 	case "q", "ctrl+c":
+		if !armed && m.hasUnsent() {
+			m.quitArmed = true
+			m.status = "a reply is not sent yet: q again to quit anyway"
+			return nil
+		}
 		return tea.Quit
+	case "R":
+		return m.startReply()
+	case "u":
+		m.undoReply()
 	case "?":
 		m.help = true
 	case "j", "down":
@@ -320,6 +427,148 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.load()
 	}
 	return nil
+}
+
+func (m *Model) startReply() tea.Cmd {
+	if m.replyFn == nil {
+		m.status = "replies are off: set --reply-cmd or YOURTURN_REPLY_CMD"
+		return nil
+	}
+	it, ok := m.current()
+	if !ok {
+		return nil
+	}
+	if it.ID == "" {
+		m.status = "this item has no number to reply with"
+		return nil
+	}
+	st, ok := m.replies[it.Key()]
+	if ok && st.state == stateSending {
+		// Replacing it would drop its result: a failure would go unseen and
+		// a success unmarked.
+		m.status = "a reply to " + it.ID + " is being sent: wait for it"
+		return nil
+	}
+	m.inputting, m.inputKey = true, it.Key()
+	m.input.Reset()
+	m.input.Prompt = "reply to " + it.ID + ": "
+	m.resizeInput()
+	if ok && st.state == stateFailed {
+		m.input.SetValue(st.text)
+	}
+	return m.input.Focus()
+}
+
+func (m *Model) resizeInput() {
+	m.input.SetWidth(max(m.width-lipgloss.Width(m.input.Prompt)-1, 1))
+}
+
+func (m *Model) handleInput(msg tea.KeyPressMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.inputting = false
+		m.input.Blur()
+		return nil
+	case "enter":
+		m.inputting = false
+		m.input.Blur()
+		text := strings.TrimSpace(m.input.Value())
+		if text == "" {
+			return nil
+		}
+		return m.queueReply(m.inputKey, text)
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return cmd
+}
+
+// queueReply holds the reply for replyDelay, so it can be undone, then sends
+// it.
+func (m *Model) queueReply(key, text string) tea.Cmd {
+	m.replySeq++
+	seq := m.replySeq
+	st := replyState{state: statePending, text: text, seq: seq}
+	if old, ok := m.replies[key]; ok && (old.state == stateSent || old.state == stateFailed) {
+		st.prev = &old
+	}
+	m.replies[key] = st
+	m.gen++
+	due := sendDueMsg{key: key, seq: seq}
+	if m.replyDelay <= 0 {
+		return m.dispatch(due)
+	}
+	m.status = fmt.Sprintf("sending %q in %s: u to undo", key+" "+text, m.replyDelay)
+	return tea.Tick(m.replyDelay, func(time.Time) tea.Msg { return due })
+}
+
+func (m *Model) dispatch(due sendDueMsg) tea.Cmd {
+	st, ok := m.replies[due.key]
+	if !ok || st.state != statePending || st.seq != due.seq {
+		// Undone, or replaced by a newer reply.
+		return nil
+	}
+	st.state, st.prev = stateSending, nil
+	m.replies[due.key] = st
+	m.gen++
+	send, r := m.replyFn, reply.Reply{ID: due.key, Text: st.text, File: m.path}
+	return func() tea.Msg {
+		return replyDoneMsg{key: due.key, seq: due.seq, err: send(context.Background(), r)}
+	}
+}
+
+func (m *Model) finishReply(msg replyDoneMsg) {
+	st, ok := m.replies[msg.key]
+	if !ok || st.seq != msg.seq {
+		return
+	}
+	m.gen++
+	if msg.err != nil {
+		st.state, st.err = stateFailed, msg.err.Error()
+		m.replies[msg.key] = st
+		m.status = "reply to " + msg.key + " failed: " + st.err
+		return
+	}
+	st.state, st.at = stateSent, m.now()
+	m.replies[msg.key] = st
+	m.status = fmt.Sprintf("sent %q", msg.key+" "+st.text)
+	if m.sentFile != "" {
+		if err := saveSent(m.sentFile, m.path, msg.key, sentEntry{Text: st.text, At: st.at}, st.at); err != nil {
+			m.status += " (could not save the mark: " + err.Error() + ")"
+		}
+	}
+}
+
+// undoReply drops the latest reply still waiting out its delay, bringing
+// back what the item showed before it.
+func (m *Model) undoReply() {
+	key, latest := "", 0
+	for k, st := range m.replies {
+		if st.state == statePending && st.seq > latest {
+			key, latest = k, st.seq
+		}
+	}
+	if key == "" {
+		m.status = "no reply to undo"
+		return
+	}
+	st := m.replies[key]
+	if st.prev != nil {
+		m.replies[key] = *st.prev
+	} else {
+		delete(m.replies, key)
+	}
+	m.gen++
+	m.status = fmt.Sprintf("undid %q", key+" "+st.text)
+}
+
+func (m *Model) hasUnsent() bool {
+	for _, st := range m.replies {
+		if st.state == statePending || st.state == stateSending {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Model) openURL(url string) tea.Cmd {
@@ -600,6 +849,9 @@ func (m *Model) itemLines(i int, it actions.Item, w int) []line {
 		}
 		out = append(out, line{text: prefix + encodeTitle(l, it.ID, n == 0, base), item: i})
 	}
+	if st, ok := m.replies[it.Key()]; ok {
+		out = append(out, line{text: "  " + replyLine(st, w-2), item: i})
+	}
 	if !open {
 		return out
 	}
@@ -607,6 +859,27 @@ func (m *Model) itemLines(i int, it actions.Item, w int) []line {
 		out = append(out, bodyLines(b, w, i)...)
 	}
 	return out
+}
+
+var (
+	sentStyle    = lipgloss.NewStyle().Foreground(lipgloss.Green)
+	pendingStyle = lipgloss.NewStyle().Foreground(lipgloss.Yellow)
+)
+
+func replyLine(st replyState, w int) string {
+	var s string
+	style := faint
+	switch st.state {
+	case statePending:
+		s, style = fmt.Sprintf("↳ sending %q soon: u to undo", st.text), pendingStyle
+	case stateSending:
+		s, style = fmt.Sprintf("↳ sending %q…", st.text), pendingStyle
+	case stateSent:
+		s, style = fmt.Sprintf("↳ sent %q %s", st.text, st.at.Format("15:04")), sentStyle
+	case stateFailed:
+		s, style = fmt.Sprintf("↳ failed %q: %s (R to retry)", st.text, st.err), errStyle
+	}
+	return style.Render(fit(s, w))
 }
 
 func markerRune(open, hasBody bool) string {
@@ -725,13 +998,20 @@ func (m *Model) header() string {
 }
 
 func (m *Model) footer() string {
+	if m.inputting {
+		return m.input.View()
+	}
 	switch {
 	case m.loadErr != nil:
 		return errStyle.Render(fit("error: "+m.loadErr.Error(), m.width))
 	case m.status != "":
 		return statusStyle.Render(fit(m.status, m.width))
 	}
-	return faint.Render(fit("j/k move · enter open · o link · y copy id · a done · ? help", m.width))
+	hint := "j/k move · enter open · o link · y copy id · a done · ? help"
+	if m.replyFn != nil {
+		hint = "j/k move · enter open · R reply · u undo · o link · ? help"
+	}
+	return faint.Render(fit(hint, m.width))
 }
 
 func helpLines(h int) []string {
@@ -746,6 +1026,8 @@ func helpLines(h int) []string {
 		"a           show / hide done (✅) items",
 		"o           open the item's link",
 		"y           copy the item's number to reply with",
+		"R           reply to the item (with --reply-cmd)",
+		"u           undo the reply being sent",
 		"r           reload",
 		"mouse       wheel scrolls, click selects, click again opens",
 		"q           quit",

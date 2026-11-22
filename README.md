@@ -42,6 +42,8 @@ Without a file, it uses the first that exists of `./ACTIONS.md`,
 |---|---|
 | `--no-mouse` | Leave the mouse to the terminal, so a plain click opens a link (no wheel scrolling) |
 | `--poll 5s` | Interval of the stat check that backs up file watching |
+| `--reply-cmd CMD` | Command that sends a reply (`R`); default `$YOURTURN_REPLY_CMD`. See [Replying](#replying) |
+| `--reply-delay 5s` | How long a reply can be undone (`u`) before it is sent |
 | `--version` | Print the version |
 
 ### Keys
@@ -57,12 +59,54 @@ Without a file, it uses the first that exists of `./ACTIONS.md`,
 | `a` | Show / hide done (✅) items |
 | `o` | Open the item's link (pick a number when it has several) |
 | `y` | Copy the item's number (e.g. `my-task#3 `) to start a reply with (OSC 52) |
+| `R` | Reply to the item (needs `--reply-cmd`) |
+| `u` | Undo the reply that is about to be sent |
 | `r` | Reload |
 | `?` | Help |
 | `q` | Quit |
 | mouse | Wheel scrolls, click selects, click again opens |
 
 With the mouse enabled, most terminals still open a link on shift+click.
+
+## Replying
+
+yourturn does not know where replies go; a command you give it does. With
+`--reply-cmd` (or `YOURTURN_REPLY_CMD`), `R` asks for a reply to the selected
+item, e.g. `A`, `OK` or a sentence. The reply waits for `--reply-delay` (5s),
+during which `u` takes it back, and then the command is run with `sh -c`:
+
+| | |
+|---|---|
+| `YOURTURN_ID` | The item's ID, e.g. `my-task#3` |
+| `YOURTURN_TEXT` | What you typed |
+| `YOURTURN_MESSAGE` | `<ID> <text>`, also given on stdin |
+| `YOURTURN_FILE` | The absolute path of the ACTIONS.md |
+
+The reply is only passed as data, never put into the command line. A command
+that exits non-zero marks the reply failed with its last line of stderr, and
+`R` offers the text again. Sent replies are marked under their item (`↳ sent
+"A" 15:20`) and the marks are kept in `$XDG_STATE_HOME/yourturn/sent.json`
+(default `~/.local/state`) for 14 days.
+
+```sh
+# e.g. append replies to a file another tool reads
+yourturn --reply-cmd 'cat >> ~/replies.txt'
+```
+
+### herdr
+
+[`contrib/herdr/yourturn-reply.sh`](contrib/herdr/yourturn-reply.sh) sends
+replies to a [herdr](https://github.com/herdrdev/herdr)-task setup, where
+the master's `~/tasks/ACTIONS.md` uses `<task>#<n>` IDs and each task's
+`~/tasks/<task>/ACTIONS.md` uses `<n>`. It is included in the release archives:
+
+```sh
+export YOURTURN_REPLY_CMD="$(dirname "$(mise which yourturn)")/contrib/herdr/yourturn-reply.sh"
+```
+
+`YOURTURN_HERDR_MODE=inbox` (default) appends the reply to `~/tasks/.inbox` for
+the master to pass on; `coordinator` sends it straight to the task's coordinator
+with `task-ask.sh --no-wait` and copies it to the inbox.
 
 ## File format
 
