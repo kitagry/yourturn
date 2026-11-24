@@ -34,12 +34,17 @@ type Options struct {
 	// Poll is the interval of the stat that backs up fsnotify.
 	Poll time.Duration
 	// Reply sends a reply to an item; nil turns replies off.
-	Reply func(context.Context, reply.Reply) error
+	// It returns the receipt the command gave, "" if none.
+	Reply func(context.Context, reply.Reply) (string, error)
 	// ReplyDelay is how long a reply waits, undoable, before it is sent.
 	ReplyDelay time.Duration
 	// SentFile keeps the sent marks across restarts; "" keeps them in
 	// memory only.
 	SentFile string
+	// ReplyStatus is a file that whatever carries replies on appends events
+	// to ("<receipt>\t<state>\t<RFC3339 time>"); the states are shown next
+	// to the sent mark of the reply that has that receipt. "" shows none.
+	ReplyStatus string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 }
@@ -68,10 +73,16 @@ type Model struct {
 	picking []string
 	status  string
 
-	replyFn    func(context.Context, reply.Reply) error
+	replyFn    func(context.Context, reply.Reply) (string, error)
 	replyDelay time.Duration
 	sentFile   string
-	now        func() time.Time
+	// statusFile is the reply status file, events what it said last.
+	statusFile    string
+	statusChanges <-chan struct{}
+	events        replyEvents
+	// goneOnce holds the keys of sent items that the last read did not have.
+	goneOnce map[string]bool
+	now      func() time.Time
 	// replies is the reply state of items, by item key.
 	replies   map[string]replyState
 	replySeq  int
@@ -126,6 +137,9 @@ func New(opts Options) *Model {
 		replyFn:    opts.Reply,
 		replyDelay: opts.ReplyDelay,
 		sentFile:   opts.SentFile,
+		statusFile: opts.ReplyStatus,
+		events:     replyEvents{},
+		goneOnce:   map[string]bool{},
 		now:        now,
 		replies:    map[string]replyState{},
 		input:      textinput.New(),
@@ -134,9 +148,12 @@ func New(opts Options) *Model {
 		for k, e := range readSent(m.sentFile)[m.path] {
 			// Expired marks are only dropped from the file on the next save.
 			if now().Sub(e.At) <= sentTTL {
-				m.replies[k] = replyState{state: stateSent, text: e.Text, at: e.At}
+				m.replies[k] = replyState{state: stateSent, text: e.Text, at: e.At, receipt: e.Receipt}
 			}
 		}
+	}
+	if m.statusFile != "" {
+		m.events = readReplyStatus(m.statusFile)
 	}
 	return m
 }
@@ -160,6 +177,8 @@ type replyState struct {
 	seq int
 	at  time.Time
 	err string
+	// receipt names the sent reply in the reply status file.
+	receipt string
 	// prev is the sent or failed reply a pending one replaced, shown again
 	// if it is undone.
 	prev *replyState
@@ -171,9 +190,10 @@ type sendDueMsg struct {
 }
 
 type replyDoneMsg struct {
-	key string
-	seq int
-	err error
+	key     string
+	seq     int
+	receipt string
+	err     error
 }
 
 type loadedMsg struct {
@@ -187,6 +207,9 @@ type loadedMsg struct {
 
 type changedMsg struct{}
 
+// replyStatusChangedMsg says the reply status file may have changed.
+type replyStatusChangedMsg struct{}
+
 type openedMsg struct {
 	url string
 	err error
@@ -194,7 +217,21 @@ type openedMsg struct {
 
 func (m *Model) Init() tea.Cmd {
 	m.changes = watch.Watch(context.Background(), m.path, m.poll)
-	return tea.Batch(m.load(), m.waitChange())
+	if m.statusFile != "" {
+		m.statusChanges = watch.Watch(context.Background(), m.statusFile, m.poll)
+	}
+	return tea.Batch(m.load(), m.waitChange(), m.waitReplyStatus())
+}
+
+func (m *Model) waitReplyStatus() tea.Cmd {
+	if m.statusChanges == nil {
+		return nil
+	}
+	ch := m.statusChanges
+	return func() tea.Msg {
+		<-ch
+		return replyStatusChangedMsg{}
+	}
 }
 
 func (m *Model) load() tea.Cmd {
@@ -286,6 +323,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyLoad(msg)
 	case changedMsg:
 		return m, tea.Batch(m.load(), m.waitChange())
+	case replyStatusChangedMsg:
+		m.events = readReplyStatus(m.statusFile)
+		m.gen++
+		return m, m.waitReplyStatus()
 	case openedMsg:
 		if msg.err != nil {
 			m.status = "open failed: " + msg.err.Error()
@@ -347,12 +388,53 @@ func (m *Model) applyLoad(msg loadedMsg) {
 		return
 	}
 	m.doc, m.modTime = msg.doc, msg.modTime
+	m.dropDoneMarks()
 	items := m.visible()
 	if i := slices.IndexFunc(items, func(it actions.Item) bool { return it.Key() == prevKey }); i >= 0 {
 		m.cursor = i
 	}
 	m.cursor = min(m.cursor, max(len(items)-1, 0))
 	m.restoreAnchor(anchorKey, anchorDelta)
+}
+
+// dropDoneMarks forgets the sent marks of items that are checked off or gone:
+// they are done, and the mark has nothing more to tell. Only replies with a
+// receipt are dropped. Without one there is no status to follow, and the mark
+// stays as it always did, until it expires.
+func (m *Model) dropDoneMarks() {
+	state := map[string]bool{} // key -> open
+	for _, it := range m.doc.Items {
+		state[it.Key()] = it.Mark.Open()
+	}
+	var done []string
+	for k, st := range m.replies {
+		if st.state != stateSent || st.receipt == "" {
+			continue
+		}
+		open, present := state[k]
+		switch {
+		case open:
+			delete(m.goneOnce, k)
+		case present:
+			done = append(done, k)
+		case m.goneOnce[k]:
+			done = append(done, k)
+		default:
+			// A read in the middle of a rewrite lacks items that are still
+			// there: only a second read without it counts as gone.
+			m.goneOnce[k] = true
+		}
+	}
+	for _, k := range done {
+		delete(m.replies, k)
+		delete(m.goneOnce, k)
+	}
+	if len(done) == 0 || m.sentFile == "" {
+		return
+	}
+	if err := forgetSent(m.sentFile, m.path, done, m.now()); err != nil {
+		m.status = "could not clear the mark: " + err.Error()
+	}
 }
 
 // anchor is where the screen is, as the item whose line is at its top and how
@@ -635,7 +717,8 @@ func (m *Model) dispatch(due sendDueMsg) tea.Cmd {
 	m.gen++
 	send, r := m.replyFn, reply.Reply{ID: due.key, Text: st.text, File: m.path}
 	return func() tea.Msg {
-		return replyDoneMsg{key: due.key, seq: due.seq, err: send(context.Background(), r)}
+		receipt, err := send(context.Background(), r)
+		return replyDoneMsg{key: due.key, seq: due.seq, receipt: receipt, err: err}
 	}
 }
 
@@ -651,11 +734,11 @@ func (m *Model) finishReply(msg replyDoneMsg) {
 		m.status = "reply to " + msg.key + " failed: " + st.err
 		return
 	}
-	st.state, st.at = stateSent, m.now()
+	st.state, st.at, st.receipt = stateSent, m.now(), msg.receipt
 	m.replies[msg.key] = st
 	m.status = fmt.Sprintf("sent %q", msg.key+" "+st.text)
 	if m.sentFile != "" {
-		if err := saveSent(m.sentFile, m.path, msg.key, sentEntry{Text: st.text, At: st.at}, st.at); err != nil {
+		if err := saveSent(m.sentFile, m.path, msg.key, sentEntry{Text: st.text, At: st.at, Receipt: st.receipt}, st.at); err != nil {
 			m.status += " (could not save the mark: " + err.Error() + ")"
 		}
 	}
@@ -1040,7 +1123,7 @@ func (m *Model) itemLines(i int, it actions.Item, w int) []line {
 		out = append(out, line{text: prefix + encodeTitle(l, it.ID, n == 0, base), item: i})
 	}
 	if st, ok := m.replies[it.Key()]; ok {
-		out = append(out, line{text: "  " + replyLine(st, w-2), item: i})
+		out = append(out, line{text: "  " + replyLine(st, m.events[st.receipt], w-2), item: i})
 	}
 	if !open {
 		return out
@@ -1065,7 +1148,7 @@ var (
 	pendingStyle = lipgloss.NewStyle().Foreground(lipgloss.Yellow)
 )
 
-func replyLine(st replyState, w int) string {
+func replyLine(st replyState, events map[string]time.Time, w int) string {
 	var s string
 	style := faint
 	switch st.state {
@@ -1075,6 +1158,11 @@ func replyLine(st replyState, w int) string {
 		s, style = fmt.Sprintf("↳ sending %q…", st.text), pendingStyle
 	case stateSent:
 		s, style = fmt.Sprintf("↳ sent %q %s", st.text, st.at.Format("15:04")), sentStyle
+		for _, state := range []string{statusRelayed, statusAcked} {
+			if at, ok := events[state]; ok {
+				s += fmt.Sprintf(" · %s %s", state, at.In(st.at.Location()).Format("15:04"))
+			}
+		}
 	case stateFailed:
 		s, style = fmt.Sprintf("↳ failed %q: %s (R to retry)", st.text, st.err), errStyle
 	}

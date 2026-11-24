@@ -46,11 +46,11 @@ func TestProgramSurvivesFileReplacedWhileReplying(t *testing.T) {
 		Path:       path,
 		Poll:       50 * time.Millisecond,
 		ReplyDelay: 100 * time.Millisecond,
-		Reply: func(_ context.Context, r reply.Reply) error {
+		Reply: func(_ context.Context, r reply.Reply) (string, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			sent = append(sent, r)
-			return nil
+			return "", nil
 		},
 	})
 	p := tea.NewProgram(m,
