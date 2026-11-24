@@ -19,24 +19,31 @@ type replyHarness struct {
 	*harness
 	sent []reply.Reply
 	fail error
+	// receipt is what the reply command prints as "receipt: <key>".
+	receipt string
 }
 
 func newReplyTest(t *testing.T, sentFile string) *replyHarness {
 	t.Helper()
 	rh := &replyHarness{harness: &harness{}}
-	rh.m = New(Options{
-		Path:       "/tmp/tasks/ACTIONS.md",
-		ReplyDelay: 5 * time.Second,
-		SentFile:   sentFile,
-		Reply: func(_ context.Context, r reply.Reply) error {
-			rh.sent = append(rh.sent, r)
-			return rh.fail
-		},
-		Now: func() time.Time { return time.Date(2026, 11, 22, 15, 20, 0, 0, time.Local) },
-	})
+	rh.m = newReplyModel(rh, sentFile, "")
 	send(rh.harness, tea.WindowSizeMsg{Width: 60, Height: 20})
 	send(rh.harness, loadedMsg{doc: actions.Parse(sample)})
 	return rh
+}
+
+func newReplyModel(rh *replyHarness, sentFile, statusFile string) *Model {
+	return New(Options{
+		Path:        "/tmp/tasks/ACTIONS.md",
+		ReplyDelay:  5 * time.Second,
+		SentFile:    sentFile,
+		ReplyStatus: statusFile,
+		Reply: func(_ context.Context, r reply.Reply) (string, error) {
+			rh.sent = append(rh.sent, r)
+			return rh.receipt, rh.fail
+		},
+		Now: func() time.Time { return time.Date(2026, 11, 24, 15, 20, 0, 0, time.Local) },
+	})
 }
 
 func typeText(hs *harness, s string) {
@@ -192,7 +199,7 @@ func TestSentMarksPersist(t *testing.T) {
 	}
 	// Marks are per file: the same ID in another file is not marked.
 	other := &replyHarness{harness: &harness{}}
-	other.m = New(Options{Path: "/tmp/other/ACTIONS.md", SentFile: file, Reply: func(context.Context, reply.Reply) error { return nil }})
+	other.m = New(Options{Path: "/tmp/other/ACTIONS.md", SentFile: file, Reply: func(context.Context, reply.Reply) (string, error) { return "", nil }})
 	send(other.harness, tea.WindowSizeMsg{Width: 60, Height: 20})
 	send(other.harness, loadedMsg{doc: actions.Parse(sample)})
 	if strings.Contains(strings.Join(screen(other.harness), "\n"), "sent") {

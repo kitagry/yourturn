@@ -40,7 +40,10 @@ type Command struct {
 
 const DefaultTimeout = 2 * time.Minute
 
-func (c Command) Send(ctx context.Context, r Reply) error {
+// Send runs the command. A "receipt: <key>" line on its stdout names the
+// reply for whatever tracks it later (see ui.Options.ReplyStatus); the last
+// one is returned, "" when there is none.
+func (c Command) Send(ctx context.Context, r Reply) (string, error) {
 	timeout := c.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -55,21 +58,34 @@ func (c Command) Send(ctx context.Context, r Reply) error {
 		"YOURTURN_FILE="+r.File,
 	)
 	cmd.Stdin = strings.NewReader(r.Message() + "\n")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	// Children the shell started must not keep the pipes open past the
 	// timeout.
 	cmd.WaitDelay = time.Second
 	if err := cmd.Run(); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("reply command timed out after %s", timeout)
+			return "", fmt.Errorf("reply command timed out after %s", timeout)
 		}
 		if line := lastLine(stderr.String()); line != "" {
-			return fmt.Errorf("%s (%w)", line, err)
+			return "", fmt.Errorf("%s (%w)", line, err)
 		}
-		return err
+		return "", err
 	}
-	return nil
+	return receipt(stdout.String()), nil
+}
+
+const receiptPrefix = "receipt: "
+
+func receipt(stdout string) string {
+	key := ""
+	for _, l := range strings.Split(stdout, "\n") {
+		k, ok := strings.CutPrefix(strings.TrimRight(l, "\r"), receiptPrefix)
+		if ok && k != "" && !strings.ContainsAny(k, " \t") {
+			key = k
+		}
+	}
+	return key
 }
 
 func lastLine(s string) string {

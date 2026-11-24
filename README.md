@@ -43,6 +43,7 @@ Without a file, it uses the first that exists of `./ACTIONS.md`,
 | `--mouse` / `--no-mouse` | Capture the mouse at start, or not (default captured unless `YOURTURN_MOUSE=0`; `m` toggles) |
 | `--poll 5s` | Interval of the stat check that backs up file watching |
 | `--reply-cmd CMD` | Command that sends a reply (`R`); default `$YOURTURN_REPLY_CMD`. See [Replying](#replying) |
+| `--reply-status FILE` | File that reports what became of sent replies; default `$YOURTURN_REPLY_STATUS`. See [Reply status](#reply-status) |
 | `--reply-delay 5s` | How long a reply can be undone (`u`) before it is sent |
 | `--version` | Print the version |
 
@@ -96,6 +97,9 @@ during which `u` takes it back, and then the command is run with `sh -c`:
 | `YOURTURN_MESSAGE` | `<ID> <text>`, also given on stdin |
 | `YOURTURN_FILE` | The absolute path of the ACTIONS.md |
 
+A command may print a line `receipt: <key>` on stdout to name the reply; see
+[Reply status](#reply-status). Other output is ignored.
+
 The reply is only passed as data, never put into the command line. A command
 that exits non-zero marks the reply failed with its last line of stderr, and
 `R` offers the text again. Sent replies are marked under their item (`↳ sent
@@ -106,6 +110,32 @@ that exits non-zero marks the reply failed with its last line of stderr, and
 # e.g. append replies to a file another tool reads
 yourturn --reply-cmd 'cat >> ~/replies.txt'
 ```
+
+### Reply status
+
+`↳ sent "A" 15:20` only says the command ran. When whatever carries the reply
+on can report back, yourturn shows how far it got:
+
+```
+↳ sent "A" 15:20 · relayed 15:32 · acked 15:40
+```
+
+For that, the reply command prints `receipt: <key>` (any key without spaces,
+unique per reply; the last such line counts), and the carrier appends events
+to the file given by `--reply-status` (or `YOURTURN_REPLY_STATUS`), one line
+each, tab separated:
+
+```
+<key>	relayed	2026-11-24T06:32:00Z
+<key>	acked	2026-11-24T06:40:00Z
+```
+
+The time is RFC 3339. `relayed` and `acked` are the states yourturn knows; lines
+with other states or that are broken are skipped. The file is watched, and the
+receipt is kept with the sent mark in `sent.json`, so it survives a restart.
+A reply is *done* when its item is checked off (✅) or gone from the file: the
+mark is then removed, which is how you can tell it from one still on its way.
+Without a receipt or a status file the mark looks as it always did.
 
 ### herdr
 
@@ -121,6 +151,14 @@ export YOURTURN_REPLY_CMD="$(dirname "$(mise which yourturn)")/contrib/herdr/you
 `YOURTURN_HERDR_MODE=inbox` (default) appends the reply to `~/tasks/.inbox` for
 the master to pass on; `coordinator` sends it straight to the task's coordinator
 with `task-ask.sh --no-wait` and copies it to the inbox.
+
+Each reply gets a key like `r-20261124T103200-a1b2`. The script ends the inbox
+line (and the message to the coordinator) with ` (reply r-20261124T103200-a1b2)`,
+records `sent` for it in `~/tasks/.reply-status` and prints
+`receipt: r-20261124T103200-a1b2`, so the carriers can add `relayed` and `acked`
+to that file. To show them, run yourturn with
+`--reply-status ~/tasks/.reply-status` (or set `YOURTURN_REPLY_STATUS`). The
+tasks root is `$HERDR_TASKS_ROOT` (default `~/tasks`).
 
 ## File format
 

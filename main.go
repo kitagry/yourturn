@@ -25,6 +25,7 @@ func main() {
 	mouse := mouseFlags(flag.CommandLine, os.Getenv("YOURTURN_MOUSE"))
 	poll := flag.Duration("poll", 5*time.Second, "interval of the stat check that backs up file watching")
 	replyCmd := flag.String("reply-cmd", os.Getenv("YOURTURN_REPLY_CMD"), "shell command that sends a reply (R); gets YOURTURN_ID, YOURTURN_TEXT, YOURTURN_MESSAGE, YOURTURN_FILE and the message on stdin (default $YOURTURN_REPLY_CMD)")
+	replyStatus := flag.String("reply-status", os.Getenv("YOURTURN_REPLY_STATUS"), "file that reports what became of sent replies, lines of \"<receipt>\\t<relayed|acked>\\t<RFC3339 time>\"; shown next to the sent mark of the reply whose command printed \"receipt: <receipt>\" (default $YOURTURN_REPLY_STATUS)")
 	replyDelay := flag.Duration("reply-delay", 5*time.Second, "how long a reply can be undone (u) before it is sent")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Usage = func() {
@@ -50,7 +51,7 @@ Flags:
 	cwd, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
 	path := resolvePath(flag.Args(), cwd, home, os.Getenv)
-	opts := ui.Options{Path: path, Open: openURL, Mouse: mouse(), Poll: *poll, ReplyDelay: *replyDelay, SentFile: sentFile(home, os.Getenv)}
+	opts := ui.Options{Path: path, Open: openURL, Mouse: mouse(), Poll: *poll, ReplyDelay: *replyDelay, SentFile: sentFile(home, os.Getenv), ReplyStatus: *replyStatus}
 	if *replyCmd != "" {
 		opts.Reply = reply.Command{Shell: *replyCmd}.Send
 	}

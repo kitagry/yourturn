@@ -20,6 +20,14 @@
 #                    the inbox. M items have no coordinator and go to the
 #                    inbox.
 #
+# Every reply gets a key, "r-<YYYYMMDDTHHMMSS>-<4 hex digits>". It ends the
+# inbox line and the coordinator message as " (reply <key>)", so whoever
+# passes the reply on can report back with it. The script records "sent" for
+# the key in <tasks root>/.reply-status ("<key>\t<state>\t<RFC 3339 time>",
+# one event per line, appended) and prints "receipt: <key>" on stdout, which
+# yourturn keeps to show the later states ("relayed", "acked", written by
+# others) next to the reply: yourturn --reply-status <tasks root>/.reply-status
+#
 # HERDR_TASKS_ROOT (default ~/tasks) and HERDR_TASK_SCRIPTS (default
 # ~/.claude/skills/herdr-task/scripts) locate the setup.
 set -euo pipefail
@@ -62,19 +70,31 @@ to_inbox() {
 qualified="${task:+$task#$num}"
 qualified="${qualified:-$id}"
 
+key="r-$(date '+%Y%m%dT%H%M%S')-$(printf '%04x' $(((RANDOM << 1 ^ RANDOM) & 0xffff)))"
+
+# Called once the reply is delivered. Recording is best effort: failing here
+# would mark a delivered reply failed, and retrying it would send it twice.
+track() {
+  printf '%s\tsent\t%s\n' "$key" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$root/.reply-status" ||
+    echo "could not record the reply status of $key" >&2
+  echo "receipt: $key"
+}
+
 if [ "$mode" = coordinator ] && [ -n "$task" ]; then
   status=0
-  "$scripts/task-ask.sh" "$task" "[yourturn] $num $text" --no-wait > /dev/null || status=$?
+  "$scripts/task-ask.sh" "$task" "[yourturn] $num $text (reply $key)" --no-wait > /dev/null || status=$?
   case "$status" in
     0) ;;
     4) echo "the coordinator of $task is waiting on a prompt in its tab; answer it there" >&2; exit 4 ;;
     *) echo "task-ask.sh failed for $task (exit $status)" >&2; exit "$status" ;;
   esac
-  to_inbox "[yourturn] human reply (already sent to the coordinator): $qualified $text"
+  to_inbox "[yourturn] human reply (already sent to the coordinator): $qualified $text (reply $key)"
+  track
   exit 0
 fi
 
 case "$mode" in
-  inbox | coordinator) to_inbox "[yourturn] human reply: $qualified $text" ;;
+  inbox | coordinator) to_inbox "[yourturn] human reply: $qualified $text (reply $key)" ;;
   *) echo "unknown YOURTURN_HERDR_MODE: $mode (inbox or coordinator)" >&2; exit 2 ;;
 esac
+track
