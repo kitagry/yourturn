@@ -56,6 +56,42 @@ Answer with the number, e.g. "1 OK".
 				},
 			},
 		},
+		"numbers with letters": {
+			src: `- **🔴 ci-maintenance#CI-9 Fix CI?**
+- **🔴 system-admin-api-go#SAG-56 Review?**
+- **🟠 patient-api-go#A266 Pick one?**
+- **🟠 gcp-ai-infra-maintenance#GM-24 Upgrade?**
+- **🟢 SAG-56 Bare lettered number**
+- **🟢 A266 Bare letter and digits**
+`,
+			want: Doc{
+				Parsed: true,
+				Items: []Item{
+					{Mark: Urgent, ID: "ci-maintenance#CI-9", Title: "Fix CI?"},
+					{Mark: Urgent, ID: "system-admin-api-go#SAG-56", Title: "Review?"},
+					{Mark: Week, ID: "patient-api-go#A266", Title: "Pick one?"},
+					{Mark: Week, ID: "gcp-ai-infra-maintenance#GM-24", Title: "Upgrade?"},
+					{Mark: Later, ID: "SAG-56", Title: "Bare lettered number"},
+					{Mark: Later, ID: "A266", Title: "Bare letter and digits"},
+				},
+			},
+		},
+		"words that only look like ids are titles": {
+			src: `- **🟢 GM-24/25 Both of them**
+- **🟢 task#gm-24 Lowercase letters**
+- **🟢 CI- Dash without digits**
+- **🟢 CI-9-1 Two dashes**
+`,
+			want: Doc{
+				Parsed: true,
+				Items: []Item{
+					{Mark: Later, Title: "GM-24/25 Both of them"},
+					{Mark: Later, Title: "task#gm-24 Lowercase letters"},
+					{Mark: Later, Title: "CI- Dash without digits"},
+					{Mark: Later, Title: "CI-9-1 Two dashes"},
+				},
+			},
+		},
 		"text after the bold part and items without bold or id": {
 			src: `- **🟢 Check it** — more words
 - plain item

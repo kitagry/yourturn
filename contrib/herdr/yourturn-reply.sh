@@ -6,7 +6,8 @@
 # yourturn passes the reply in YOURTURN_ID / YOURTURN_TEXT / YOURTURN_FILE.
 # The ID is "<task>#<n>" in the master's aggregated ACTIONS.md, "<n>" in a
 # task's own ACTIONS.md (the task is the file's directory under the tasks
-# root) and "M<n>" for the master's own items.
+# root) and "M<n>" for the master's own items. <n> is digits, optionally
+# after upper-case letters and a "-" ("3", "A266", "CI-9").
 #
 # YOURTURN_HERDR_MODE picks where it goes:
 #   inbox (default)  append "[yourturn] human reply: <task>#<n> <text>" to
@@ -31,20 +32,23 @@ text=$(printf '%s' "${YOURTURN_TEXT:-}" | tr '\n\t' '  ')
 file="${YOURTURN_FILE:-}"
 
 task="" num=""
-if [[ "$id" =~ ^([a-z0-9][a-z0-9._-]*)#([0-9]+)$ ]]; then
+if [[ "$id" =~ ^([a-z0-9][a-z0-9._-]*)#(([A-Z]+-?)?[0-9]+)$ ]]; then
   task="${BASH_REMATCH[1]}" num="${BASH_REMATCH[2]}"
-elif [[ "$id" =~ ^M[0-9]+$ ]]; then
-  task=""
-elif [[ "$id" =~ ^[0-9]+$ ]]; then
+elif [[ "$id" =~ ^([A-Z]+-?)?[0-9]+$ ]]; then
   dir=$(dirname "$file")
   # Both are empty when neither directory exists, which must not match.
   parent=$(cd "$(dirname "$dir")" 2>/dev/null && pwd -P) || parent=""
   root_real=$(cd "$root" 2>/dev/null && pwd -P) || root_real=""
-  if [ -z "$root_real" ] || [ "$parent" != "$root_real" ]; then
+  if [ -n "$root_real" ] && [ "$parent" = "$root_real" ]; then
+    # Checked before M<n>: master's items never live in a task's file, so
+    # "M12" there is the task's own lettered number.
+    task=$(basename "$dir") num="$id"
+  elif [[ "$id" =~ ^M[0-9]+$ ]]; then
+    task=""
+  else
     echo "cannot tell the task of item $id: $file is not in a task directory under $root" >&2
     exit 2
   fi
-  task=$(basename "$dir") num="$id"
 else
   echo "unknown item ID: $id" >&2
   exit 2
