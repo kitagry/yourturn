@@ -66,7 +66,7 @@ func (m Mark) Open() bool { return m != Done }
 
 type Item struct {
 	Mark Mark
-	// ID is what a reply names the item by: "1", "M2" or "<task>#3". Empty
+	// ID is what a reply names the item by: "1", "M2", "CI-9" or "<task>#3". Empty
 	// when the item has none.
 	ID    string
 	Title string
@@ -103,7 +103,9 @@ type Doc struct {
 var (
 	listItem = regexp.MustCompile(`^[-*+]\s+(.*)$`)
 	bold     = regexp.MustCompile(`^\*\*(.+?)\*\*\s*(.*)$`)
-	itemID   = regexp.MustCompile(`^(\d+|M\d+|[a-z0-9][a-z0-9._-]*#\d+)\s+(.+)$`)
+	// A number is digits with an optional upper-case prefix: "3", "M2",
+	// "A266", "CI-9". An ID is a number, or "<task>#<number>".
+	itemID = regexp.MustCompile(`^((?:[A-Z]+-?)?\d+|[a-z0-9][a-z0-9._-]*#(?:[A-Z]+-?)?\d+)\s+(.+)$`)
 )
 
 func Parse(src string) Doc {
