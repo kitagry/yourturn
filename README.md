@@ -133,7 +133,7 @@ each, tab separated:
 The time is RFC 3339. `relayed` and `acked` are the states yourturn knows; lines
 with other states or that are broken are skipped. The file is watched, and the
 receipt is kept with the sent mark in `sent.json`, so it survives a restart.
-A reply is *done* when its item is checked off (✅) or gone from the file: the
+A reply is *done* when its item is checked off (✅) or gone from the file (on two reads in a row, in case it was caught mid-rewrite): the
 mark is then removed, which is how you can tell it from one still on its way.
 Without a receipt or a status file the mark looks as it always did.
 
