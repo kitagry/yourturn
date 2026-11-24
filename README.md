@@ -57,6 +57,9 @@ Without a file, it uses the first that exists of `./ACTIONS.md`,
 | `l` / `h` | Open / close |
 | `E` / `C` | Open all / close all |
 | `a` | Show / hide done (✅) items |
+| `/` | Search the shown items, their first line and body, ignoring case (`esc` cancels) |
+| `n` / `N` | Next / previous match, wrapping around |
+| `esc` | Clear the search highlight |
 | `o` | Open the item's link (pick a number when it has several) |
 | `y` | Copy the item's number (e.g. `my-task#3 `) to start a reply with (OSC 52) |
 | `R` | Reply to the item (needs `--reply-cmd`) |
@@ -66,6 +69,11 @@ Without a file, it uses the first that exists of `./ACTIONS.md`,
 | `?` | Help |
 | `q` | Quit |
 | mouse | When captured: wheel scrolls, click selects, click again opens |
+
+`/` moves to the first item from the selected one that contains the text and
+highlights every match; an item that matches only in its body is opened. Done
+items hidden by `a` are not searched. The highlight stays across reloads until
+`esc`.
 
 The mouse is captured by default: the wheel scrolls and a click selects an
 item (click it again to open it). To select and copy text or click a link in
