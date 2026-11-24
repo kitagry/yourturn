@@ -63,6 +63,9 @@ Answer with the number, e.g. "1 OK".
 - **🟠 gcp-ai-infra-maintenance#GM-24 Upgrade?**
 - **🟢 SAG-56 Bare lettered number**
 - **🟢 A266 Bare letter and digits**
+- **🟠 patient-api-go#A266c Branch c?**
+- **🟢 A266b Bare branch**
+- **🟢 3a Digits and a branch**
 `,
 			want: Doc{
 				Parsed: true,
@@ -73,6 +76,9 @@ Answer with the number, e.g. "1 OK".
 					{Mark: Week, ID: "gcp-ai-infra-maintenance#GM-24", Title: "Upgrade?"},
 					{Mark: Later, ID: "SAG-56", Title: "Bare lettered number"},
 					{Mark: Later, ID: "A266", Title: "Bare letter and digits"},
+					{Mark: Week, ID: "patient-api-go#A266c", Title: "Branch c?"},
+					{Mark: Later, ID: "A266b", Title: "Bare branch"},
+					{Mark: Later, ID: "3a", Title: "Digits and a branch"},
 				},
 			},
 		},
@@ -81,6 +87,8 @@ Answer with the number, e.g. "1 OK".
 - **🟢 task#gm-24 Lowercase letters**
 - **🟢 CI- Dash without digits**
 - **🟢 CI-9-1 Two dashes**
+- **🟢 A266bc Two branch letters**
+- **🟢 A266-c Dash before the branch**
 `,
 			want: Doc{
 				Parsed: true,
@@ -89,6 +97,8 @@ Answer with the number, e.g. "1 OK".
 					{Mark: Later, Title: "task#gm-24 Lowercase letters"},
 					{Mark: Later, Title: "CI- Dash without digits"},
 					{Mark: Later, Title: "CI-9-1 Two dashes"},
+					{Mark: Later, Title: "A266bc Two branch letters"},
+					{Mark: Later, Title: "A266-c Dash before the branch"},
 				},
 			},
 		},

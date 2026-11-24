@@ -198,7 +198,7 @@ func TestCopyReplyPrefix(t *testing.T) {
 }
 
 func TestCopyLetteredReplyPrefix(t *testing.T) {
-	for _, id := range []string{"gcp-ai-infra-maintenance#GM-24", "GCR-4"} {
+	for _, id := range []string{"gcp-ai-infra-maintenance#GM-24", "GCR-4", "patient-api-go#A266c"} {
 		t.Run(id, func(t *testing.T) {
 			m := newTest(t, "- **🔴 "+id+" Upgrade?**\n", 60, 20)
 			m = send(m, key("y"))

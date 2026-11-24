@@ -142,9 +142,10 @@ background, options and links indented under it:
   ⏳ waiting, ✅ done. Items are grouped by their own mark (or by the `## `
   heading they are under when they have none), whatever order the file has.
 - The number after the mark is the item's ID: a number (`1`, `M2`, `A266`,
-  `CI-9`) or `<task>#<number>` (`alpha#3`, `ci-maintenance#CI-9`). A number is
-  digits, optionally after upper-case letters and an optional `-`. It must be
-  followed by a space.
+  `CI-9`, `A266c`) or `<task>#<number>` (`alpha#3`, `ci-maintenance#CI-9`).
+  A number is digits, optionally after upper-case letters and an optional `-`,
+  and optionally followed by one lower-case branch letter (`A266b`, `3a`). It
+  must be followed by a space.
 - Bold, inline code, `[text](https://...)` links and bare URLs are rendered;
   links are clickable (OSC 8). Only `http(s)` links are made clickable.
 - A file without any list item is shown as it is.

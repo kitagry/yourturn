@@ -240,14 +240,18 @@ func TestExpiredMarksAreNotShown(t *testing.T) {
 }
 
 func TestReplyToLetteredID(t *testing.T) {
-	rh := newReplyTest(t, "")
-	send(rh.harness, loadedMsg{doc: actions.Parse("- **🔴 ci-maintenance#CI-9 Fix CI?**\n")})
-	send(rh.harness, key("R"))
-	typeText(rh.harness, "OK")
-	send(rh.harness, key("enter"))
-	fire(t, rh, "ci-maintenance#CI-9")
-	want := []reply.Reply{{ID: "ci-maintenance#CI-9", Text: "OK", File: "/tmp/tasks/ACTIONS.md"}}
-	if diff := cmp.Diff(want, rh.sent); diff != "" {
-		t.Errorf("sent (-want +got):\n%s", diff)
+	for _, id := range []string{"ci-maintenance#CI-9", "patient-api-go#A266c"} {
+		t.Run(id, func(t *testing.T) {
+			rh := newReplyTest(t, "")
+			send(rh.harness, loadedMsg{doc: actions.Parse("- **🔴 " + id + " Fix CI?**\n")})
+			send(rh.harness, key("R"))
+			typeText(rh.harness, "OK")
+			send(rh.harness, key("enter"))
+			fire(t, rh, id)
+			want := []reply.Reply{{ID: id, Text: "OK", File: "/tmp/tasks/ACTIONS.md"}}
+			if diff := cmp.Diff(want, rh.sent); diff != "" {
+				t.Errorf("sent (-want +got):\n%s", diff)
+			}
+		})
 	}
 }

@@ -78,6 +78,9 @@ func TestInboxMode(t *testing.T) {
 		{"ci-maintenance#CI-9", "OK", master},
 		{"A266", "B", taskFile},
 		{"M12", "C", taskFile},
+		{"patient-api-go#A266c", "D", master},
+		{"A266c", "E", taskFile},
+		{"M2a", "F", master},
 	} {
 		if out, err := e.run(t, "inbox", c.id, c.text, c.file); err != nil {
 			t.Fatalf("%s: %v: %s", c.id, err, out)
@@ -90,6 +93,9 @@ func TestInboxMode(t *testing.T) {
 		"ci-maintenance\t[yourturn] human reply: ci-maintenance#CI-9 OK",
 		"alpha\t[yourturn] human reply: alpha#A266 B",
 		"alpha\t[yourturn] human reply: alpha#M12 C",
+		"patient-api-go\t[yourturn] human reply: patient-api-go#A266c D",
+		"alpha\t[yourturn] human reply: alpha#A266c E",
+		"master\t[yourturn] human reply: M2a F",
 	}
 	if diff := cmp.Diff(want, e.inbox(t)); diff != "" {
 		t.Errorf("inbox (-want +got):\n%s", diff)
