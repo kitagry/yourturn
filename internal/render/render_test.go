@@ -168,3 +168,60 @@ func TestEncodeDropsControlCharacters(t *testing.T) {
 		t.Errorf("Encode() = %q, want control characters dropped", got)
 	}
 }
+
+func TestHighlight(t *testing.T) {
+	tests := map[string]struct {
+		in, query string
+		want      []Segment
+		found     bool
+	}{
+		"no match":    {in: "abc", query: "x", want: []Segment{{Text: "abc"}}},
+		"empty query": {in: "abc", query: "", want: []Segment{{Text: "abc"}}},
+		"ignores case": {
+			in: "Deploy and deploy", query: "DEPLOY", found: true,
+			want: []Segment{{Text: "Deploy", Match: true}, {Text: " and "}, {Text: "deploy", Match: true}},
+		},
+		"across a bold boundary keeps attributes": {
+			in: "a **bc** d", query: "a b", found: true,
+			want: []Segment{{Text: "a ", Match: true}, {Text: "b", Bold: true, Match: true}, {Text: "c", Bold: true}, {Text: " d"}},
+		},
+		"regexp characters are plain text": {
+			in: "a.b axb", query: "a.b", found: true,
+			want: []Segment{{Text: "a.b", Match: true}, {Text: " axb"}},
+		},
+		"keeps a grapheme whole": {
+			in: "café x", query: "cafe", found: true,
+			want: []Segment{{Text: "café", Match: true}, {Text: " x"}},
+		},
+		"multibyte": {
+			in: "確認してください", query: "して", found: true,
+			want: []Segment{{Text: "確認"}, {Text: "して", Match: true}, {Text: "ください"}},
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, found := Highlight(Inline(tt.in), tt.query)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("Highlight() mismatch (-want +got):\n%s", diff)
+			}
+			if found != tt.found {
+				t.Errorf("Highlight() found = %v, want %v", found, tt.found)
+			}
+		})
+	}
+}
+
+func TestWrapKeepsMatch(t *testing.T) {
+	segs, _ := Highlight(Inline("aaa bbb"), "bbb")
+	got := Wrap(segs, 4)
+	want := [][]Segment{{{Text: "aaa"}}, {{Text: "bbb", Match: true}}}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Wrap() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestEncodeStylesMatch(t *testing.T) {
+	if got := Encode([]Segment{{Text: "x", Match: true}}); got == "x" {
+		t.Error("a match is drawn like plain text")
+	}
+}

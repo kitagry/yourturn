@@ -78,6 +78,10 @@ type Model struct {
 	inputting bool
 	input     textinput.Model
 	inputKey  string
+	// searching is set when the input is the search query, not a reply.
+	searching bool
+	// search is the last query; its matches are highlighted until esc.
+	search string
 	// quitArmed is set by a q that was held back by a pending reply.
 	quitArmed bool
 
@@ -431,6 +435,21 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		}
 	case "R":
 		return m.startReply()
+	case "/":
+		m.inputting, m.searching = true, true
+		m.input.Reset()
+		m.input.Prompt = "/"
+		m.resizeInput()
+		return m.input.Focus()
+	case "n":
+		m.findMatch(1, false)
+	case "N":
+		m.findMatch(-1, false)
+	case "esc":
+		if m.search != "" {
+			m.search = ""
+			m.gen++
+		}
 	case "u":
 		m.undoReply()
 	case "?":
@@ -537,7 +556,7 @@ func (m *Model) startReply() tea.Cmd {
 		m.status = "a reply to " + it.ID + " is being sent: wait for it"
 		return nil
 	}
-	m.inputting, m.inputKey = true, it.Key()
+	m.inputting, m.searching, m.inputKey = true, false, it.Key()
 	m.input.Reset()
 	m.input.Prompt = "reply to " + it.ID + ": "
 	m.resizeInput()
@@ -560,6 +579,21 @@ func (m *Model) handleInput(msg tea.KeyPressMsg) tea.Cmd {
 	case "enter":
 		m.inputting = false
 		m.input.Blur()
+		if m.searching {
+			// Search what is on disk now, not the list from before the input.
+			if m.held != nil && m.picking == nil {
+				held := *m.held
+				m.held = nil
+				m.applyLoad(held)
+			}
+			// Like less and vim, an empty query repeats the last one.
+			if q := m.input.Value(); q != "" {
+				m.search = q
+			}
+			m.gen++
+			m.findMatch(1, true)
+			return nil
+		}
 		text := strings.TrimSpace(m.input.Value())
 		if text == "" {
 			return nil
@@ -657,6 +691,71 @@ func (m *Model) hasUnsent() bool {
 		}
 	}
 	return false
+}
+
+// matches tells whether the item's first line and its body contain the
+// search query.
+func (m *Model) matches(it actions.Item) (title, body bool) {
+	_, title = render.Highlight(titleSegments(it), m.search)
+	for _, b := range it.Body {
+		_, _, rest := splitBody(b)
+		if _, ok := render.Highlight(render.Inline(rest), m.search); ok {
+			return title, true
+		}
+	}
+	return title, false
+}
+
+// findMatch moves the cursor to the next visible item that matches the
+// search, in direction dir, wrapping around. The current item counts only
+// when from is set, as when a search is started. An item that matches only in
+// its body is opened, so the match is seen.
+func (m *Model) findMatch(dir int, from bool) {
+	if m.search == "" {
+		m.status = "no search yet: / to search"
+		return
+	}
+	items := m.visible()
+	var hits []int
+	title := map[int]bool{}
+	for i, it := range items {
+		if t, b := m.matches(it); t || b {
+			hits = append(hits, i)
+			title[i] = t
+		}
+	}
+	if len(hits) == 0 {
+		m.status = fmt.Sprintf("no match for %q", m.search)
+		return
+	}
+	n := len(items)
+	start := 1
+	if from {
+		start = 0
+	}
+	for step := start; step <= n; step++ {
+		i := ((m.cursor+dir*step)%n + n) % n
+		k := slices.Index(hits, i)
+		if k < 0 {
+			continue
+		}
+		wrapped := ""
+		switch {
+		case step > 0 && dir > 0 && i <= m.cursor:
+			wrapped = " (wrapped to the top)"
+		case step > 0 && dir < 0 && i >= m.cursor:
+			wrapped = " (wrapped to the bottom)"
+		}
+		m.cursor = i
+		if !title[i] {
+			m.expanded[items[i].Key()] = true
+		}
+		m.gen++
+		m.clampOffset()
+		m.ensureVisible()
+		m.status = fmt.Sprintf("/%s: %d of %d%s", m.search, k+1, len(hits), wrapped)
+		return
+	}
 }
 
 func (m *Model) openURL(url string) tea.Cmd {
@@ -918,11 +1017,7 @@ func (m *Model) itemLines(i int, it actions.Item, w int) []line {
 	case open || hasBody:
 		marker = markerRune(open, hasBody) + " "
 	}
-	var segs []render.Segment
-	if it.ID != "" {
-		segs = append(segs, render.Segment{Text: it.ID, Bold: true}, render.Segment{Text: " "})
-	}
-	segs = append(segs, render.Inline(it.Title)...)
+	segs, _ := render.Highlight(titleSegments(it), m.search)
 	base := lipgloss.NewStyle()
 	if !it.Mark.Open() {
 		base = faint
@@ -951,9 +1046,18 @@ func (m *Model) itemLines(i int, it actions.Item, w int) []line {
 		return out
 	}
 	for _, b := range it.Body {
-		out = append(out, bodyLines(b, w, i)...)
+		out = append(out, bodyLines(b, w, i, m.search)...)
 	}
 	return out
+}
+
+// titleSegments is the item's first line: its ID and title.
+func titleSegments(it actions.Item) []render.Segment {
+	var segs []render.Segment
+	if it.ID != "" {
+		segs = append(segs, render.Segment{Text: it.ID, Bold: true}, render.Segment{Text: " "})
+	}
+	return append(segs, render.Inline(it.Title)...)
 }
 
 var (
@@ -990,30 +1094,35 @@ func markerRune(open, hasBody bool) string {
 
 // encodeTitle renders a title line, coloring the leading ID on its first line.
 func encodeTitle(l []render.Segment, id string, first bool, base lipgloss.Style) string {
-	if first && id != "" && len(l) > 0 && l[0].Text == id {
-		return idStyle.Inherit(base).Render(id) + render.EncodeWith(l[1:], base)
+	if !first || id == "" {
+		return render.EncodeWith(l, base)
 	}
-	return render.EncodeWith(l, base)
+	// A search match splits the ID into several segments.
+	n, rest := 0, id
+	for n < len(l) && rest != "" && l[n].Bold {
+		r, ok := strings.CutPrefix(rest, l[n].Text)
+		if !ok {
+			break
+		}
+		n, rest = n+1, r
+	}
+	if rest != "" {
+		return render.EncodeWith(l, base)
+	}
+	return render.EncodeWith(l[:n], idStyle.Inherit(base)) + render.EncodeWith(l[n:], base)
 }
 
 // bodyLines renders one body line: list markers become bullets and wrapped
 // lines hang under the text, keeping the source's nesting.
-func bodyLines(src string, w, item int) []line {
+func bodyLines(src string, w, item int, query string) []line {
 	if strings.TrimSpace(src) == "" {
 		return []line{{item: item}}
 	}
-	trimmed := strings.TrimLeft(src, " \t")
-	indent := 4 + (len(src) - len(trimmed))
-	bullet := ""
-	for _, mk := range []string{"- ", "* ", "+ "} {
-		if rest, ok := strings.CutPrefix(trimmed, mk); ok {
-			bullet, trimmed = "• ", rest
-			break
-		}
-	}
+	indent, bullet, trimmed := splitBody(src)
 	hang := indent + lipgloss.Width(bullet)
+	segs, _ := render.Highlight(render.Inline(trimmed), query)
 	var out []line
-	for n, l := range render.Wrap(render.Inline(trimmed), max(w-hang, 4)) {
+	for n, l := range render.Wrap(segs, max(w-hang, 4)) {
 		lead := strings.Repeat(" ", hang)
 		if n == 0 {
 			lead = strings.Repeat(" ", indent) + faint.Render(bullet)
@@ -1021,6 +1130,19 @@ func bodyLines(src string, w, item int) []line {
 		out = append(out, line{text: lead + render.Encode(l), item: item})
 	}
 	return out
+}
+
+// splitBody splits a body line into its indent on screen, its bullet ("" when
+// it is not a list item) and its text.
+func splitBody(src string) (indent int, bullet, text string) {
+	text = strings.TrimLeft(src, " \t")
+	indent = 4 + (len(src) - len(text))
+	for _, mk := range []string{"- ", "* ", "+ "} {
+		if rest, ok := strings.CutPrefix(text, mk); ok {
+			return indent, "• ", rest
+		}
+	}
+	return indent, "", text
 }
 
 func (m *Model) View() tea.View {
@@ -1124,6 +1246,9 @@ func helpLines(h int) []string {
 		"l/h         open / close",
 		"E/C         open all / close all",
 		"a           show / hide done (✅) items",
+		"/           search the items (ignores case; esc cancels)",
+		"n/N         next / previous match",
+		"esc         clear the search highlight",
 		"o           open the item's link",
 		"y           copy the item's number to reply with",
 		"R           reply to the item (with --reply-cmd)",

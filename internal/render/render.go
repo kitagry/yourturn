@@ -7,7 +7,10 @@ package render
 
 import (
 	"regexp"
+	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -20,6 +23,8 @@ type Segment struct {
 	Code bool
 	// URL makes the segment a link.
 	URL string
+	// Match marks text found by a search.
+	Match bool
 }
 
 var (
@@ -191,7 +196,8 @@ func segments(cs []cell) []Segment {
 	var out []Segment
 	for _, c := range cs {
 		a := c.attrs
-		if n := len(out); n > 0 && out[n-1].Bold == a.Bold && out[n-1].Code == a.Code && out[n-1].URL == a.URL {
+		a.Text = ""
+		if n := len(out); n > 0 && sameAttrs(out[n-1], a) {
 			out[n-1].Text += c.g
 			continue
 		}
@@ -199,6 +205,69 @@ func segments(cs []cell) []Segment {
 		out = append(out, a)
 	}
 	return out
+}
+
+func sameAttrs(a, b Segment) bool {
+	a.Text, b.Text = "", ""
+	return a == b
+}
+
+// Highlight marks every match of query in segs, ignoring case. The query is
+// plain text, not a pattern. A match may span segments; each piece keeps its
+// own attributes. found reports whether there was any match.
+func Highlight(segs []Segment, query string) (out []Segment, found bool) {
+	q := []rune(query)
+	for i, r := range q {
+		q[i] = unicode.ToLower(r)
+	}
+	if len(q) == 0 {
+		return segs, false
+	}
+	var text []rune
+	for _, s := range segs {
+		text = append(text, []rune(s.Text)...)
+	}
+	lower := make([]rune, len(text))
+	for i, r := range text {
+		lower[i] = unicode.ToLower(r)
+	}
+	hit := make([]bool, len(text))
+	for i := 0; i+len(q) <= len(lower); {
+		if slices.Equal(lower[i:i+len(q)], q) {
+			for j := i; j < i+len(q); j++ {
+				hit[j] = true
+			}
+			found = true
+			i += len(q)
+			continue
+		}
+		i++
+	}
+	if !found {
+		return segs, false
+	}
+	// Marks whole graphemes: splitting one (an accent, an emoji's variation
+	// selector) across segments would draw it broken.
+	i := 0
+	for _, s := range segs {
+		state := -1
+		rest := s.Text
+		for rest != "" {
+			var g string
+			g, rest, _, state = uniseg.FirstGraphemeClusterInString(rest, state)
+			n := utf8.RuneCountInString(g)
+			a := s
+			a.Text, a.Match = "", slices.Contains(hit[i:i+n], true)
+			if k := len(out); k > 0 && sameAttrs(out[k-1], a) {
+				out[k-1].Text += g
+			} else {
+				a.Text = g
+				out = append(out, a)
+			}
+			i += n
+		}
+	}
+	return out, true
 }
 
 func isSpace(c cell) bool { return c.g == " " || c.g == "\t" }
@@ -269,9 +338,10 @@ func Truncate(segs []Segment, width int) []Segment {
 }
 
 var (
-	boldStyle = lipgloss.NewStyle().Bold(true)
-	codeStyle = lipgloss.NewStyle().Foreground(lipgloss.Cyan)
-	linkStyle = lipgloss.NewStyle().Foreground(lipgloss.Blue).Underline(true)
+	boldStyle  = lipgloss.NewStyle().Bold(true)
+	codeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Cyan)
+	linkStyle  = lipgloss.NewStyle().Foreground(lipgloss.Blue).Underline(true)
+	matchStyle = lipgloss.NewStyle().Background(lipgloss.Yellow).Foreground(lipgloss.Black)
 )
 
 const (
@@ -297,6 +367,10 @@ func EncodeWith(segs []Segment, base lipgloss.Style) string {
 		}
 		if s.Code {
 			st = st.Inherit(codeStyle)
+			styled = true
+		}
+		if s.Match {
+			st = matchStyle.Inherit(st)
 			styled = true
 		}
 		if s.URL != "" {
